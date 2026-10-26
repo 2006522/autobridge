@@ -1,0 +1,32 @@
+{
+  "schemaVersion": 1,
+  "id": "autobridge",
+  "version": "1.0.0",
+  "name": "自动搭路(AutoBridge)",
+  "description": "自动搭路 (AutoBridge)：按住右键往前走，自动在脚前铺方块，横穿峡谷/岩浆不用再倒退着搭。Minecraft 26.4-snapshot-5 / Fabric。",
+  "authors": [
+    "2006522"
+  ],
+  "license": "MIT",
+  "icon": "assets/autobridge/icon.png",
+  "environment": "*",
+  "entrypoints": {
+    "main": [
+      "dev.autobridge.AutoBridge"
+    ],
+    "client": [
+      "dev.autobridge.client.AutoBridgeClient"
+    ]
+  },
+  "depends": {
+    "fabricloader": ">=0.19.5",
+    "fabric-api": "*",
+    "minecraft": "*",
+    "java": ">=25"
+  },
+  "mixins": [
+    {
+      "config": "autobridge.mixins.json"
+    }
+  ]
+}
