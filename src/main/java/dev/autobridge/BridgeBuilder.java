@@ -81,7 +81,24 @@ public final class BridgeBuilder {
 
     /** 玩家站的那一层、朝向前方一格（也就是下一步要踩的那块）。 */
     public static BlockPos frontPos(ServerPlayer player) {
-        return player.blockPosition().relative(player.getDirection()).below();
+        return player.blockPosition().relative(forward(player)).below();
+    }
+
+    /**
+     * "前方"取哪个方向：优先用<b>实际移动方向</b>，没在动才用朝向。
+     *
+     * <p>只按朝向算的话，侧身沿着崖边平移（很常见的搭桥姿势）会把桥修到自己侧面去；
+     * 按速度算才是"你往哪走就往哪铺"。速度抖动/为 0 时回退到朝向。</p>
+     */
+    private static Direction forward(ServerPlayer player) {
+        Vec3 velocity = player.getDeltaMovement();
+        // getNearest 比的是整数分量的绝对值，放大一千倍才分得出主次
+        int x = (int) Math.round(velocity.x * 1000.0D);
+        int z = (int) Math.round(velocity.z * 1000.0D);
+        if (x == 0 && z == 0) {
+            return player.getDirection();
+        }
+        return Direction.getNearest(x, 0, z, player.getDirection());
     }
 
     /** 脚前那一格是否需要补。 */
@@ -132,7 +149,7 @@ public final class BridgeBuilder {
         }
         ServerLevel level = player.level();
         BlockPos target = frontPos(player);
-        Direction dir = player.getDirection();
+        Direction dir = forward(player);
 
         // 支撑面：脚前那格的"这边那格"朝 dir 的那个面 —— 也就是玩家正踩着的那块。
         // 交给原版 BlockPlaceContext 去判支撑，相邻半空中没有依附会自己失败，不会凭空造方块。
