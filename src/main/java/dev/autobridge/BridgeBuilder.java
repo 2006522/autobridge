@@ -4,12 +4,9 @@ import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
-import net.minecraft.world.InteractionHand;
 import net.minecraft.world.InteractionResult;
 import net.minecraft.world.item.BlockItem;
-import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.context.BlockPlaceContext;
-import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.phys.BlockHitResult;
 import net.minecraft.world.phys.Vec3;
 
@@ -33,16 +30,19 @@ import java.util.concurrent.ConcurrentHashMap;
  *   <li>手头/快捷栏里找得到能当砖的方块。</li>
  * </ol>
  * 所以正常站在地上走、对着墙放方块、方块用完了这些情况都不会被影响。</p>
+ *
+ * <p>条件判断本身在 {@link BridgeProbe}，客户端画准星提示时用的是同一份，
+ * 保证"提示亮着"就等于"按下去真的会铺"。</p>
  */
 public final class BridgeBuilder {
 
     /** 客户端每 4 刻发一次心跳（约 200ms），窗口给到 350ms 免得网络抖动断档。 */
     private static final long WINDOW_MS = 350L;
 
-    /** 判定"在移动"的水平速度阈值（格/刻）。走路约 0.215。 */
-    private static final double MOVE_EPSILON = 0.02D;
-
     private static final Map<UUID, Long> SIGNAL = new ConcurrentHashMap<>();
+
+    /** 上次真正铺成功的时刻（毫秒），用于 {@code place_delay} 节流。 */
+    private static final Map<UUID, Long> LAST_PLACE = new ConcurrentHashMap<>();
 
     private BridgeBuilder() {
     }
@@ -70,6 +70,7 @@ public final class BridgeBuilder {
 
     public static void forget(ServerPlayer player) {
         SIGNAL.remove(player.getUUID());
+        LAST_PLACE.remove(player.getUUID());
     }
 
     private static boolean active(ServerPlayer player) {
@@ -77,53 +78,15 @@ public final class BridgeBuilder {
         return at != null && System.currentTimeMillis() - at <= WINDOW_MS;
     }
 
-    // ---------------------------------------------------------------- 位置判断
-
-    /** 玩家站的那一层、朝向前方一格（也就是下一步要踩的那块）。 */
-    public static BlockPos frontPos(ServerPlayer player) {
-        return player.blockPosition().relative(forward(player)).below();
-    }
-
-    /**
-     * "前方"取哪个方向：优先用<b>实际移动方向</b>，没在动才用朝向。
-     *
-     * <p>只按朝向算的话，侧身沿着崖边平移（很常见的搭桥姿势）会把桥修到自己侧面去；
-     * 按速度算才是"你往哪走就往哪铺"。速度抖动/为 0 时回退到朝向。</p>
-     */
-    private static Direction forward(ServerPlayer player) {
-        Vec3 velocity = player.getDeltaMovement();
-        // getNearest 比的是整数分量的绝对值，放大一千倍才分得出主次
-        int x = (int) Math.round(velocity.x * 1000.0D);
-        int z = (int) Math.round(velocity.z * 1000.0D);
-        if (x == 0 && z == 0) {
-            return player.getDirection();
-        }
-        return Direction.getNearest(x, 0, z, player.getDirection());
-    }
+    // ---------------------------------------------------------------- 判断（转发到 BridgeProbe）
 
     /** 脚前那一格是否需要补。 */
     public static boolean needsBridge(ServerPlayer player) {
-        if (!AutoBridgeConfig.enable) {
-            return false;
-        }
-        ServerLevel level = player.level();
-        if (level == null || !player.isAlive()) {
-            return false;
-        }
-        if (AutoBridgeConfig.needMoving && !isMoving(player)) {
-            return false;
-        }
-        BlockPos target = frontPos(player);
-        if (!level.getBlockState(target).canBeReplaced()) {
-            return false; // 前面已经站得住了
-        }
-        // 前方下面还有地面 → 那是平地/台阶，不需要铺
-        return level.getBlockState(target.below()).isAir();
+        return BridgeProbe.needsBridge(player);
     }
 
-    private static boolean isMoving(ServerPlayer player) {
-        Vec3 velocity = player.getDeltaMovement();
-        return Math.abs(velocity.x) + Math.abs(velocity.z) > MOVE_EPSILON;
+    public static BlockPos frontPos(ServerPlayer player) {
+        return BridgeProbe.frontPos(player);
     }
 
     /**
@@ -133,23 +96,30 @@ public final class BridgeBuilder {
      * 摆到"那格地面上面"，而我们要摆的是脚前那一格 —— 不拦就会一次放两块。</p>
      */
     public static boolean shouldSuppress(ServerPlayer player) {
-        return active(player) && needsBridge(player) && findMaterial(player) != null;
+        return active(player) && BridgeProbe.ready(player);
     }
 
     // ---------------------------------------------------------------- 放置
 
     /** 尝试铺一格，返回是否真的放下了。 */
     public static boolean tryBuild(ServerPlayer player) {
-        if (!needsBridge(player)) {
+        if (!BridgeProbe.needsBridge(player)) {
             return false;
         }
-        Material material = findMaterial(player);
+        // 铺路节流：place_delay 刻内只铺一格。0 = 每刻都尝试（最快）
+        if (AutoBridgeConfig.placeDelay > 0) {
+            Long last = LAST_PLACE.get(player.getUUID());
+            if (last != null && System.currentTimeMillis() - last < AutoBridgeConfig.placeDelay * 50L) {
+                return false;
+            }
+        }
+        BridgeProbe.Material material = BridgeProbe.material(player);
         if (material == null) {
             return false;
         }
         ServerLevel level = player.level();
-        BlockPos target = frontPos(player);
-        Direction dir = forward(player);
+        BlockPos target = BridgeProbe.frontPos(player);
+        Direction dir = BridgeProbe.forward(player);
 
         // 支撑面：脚前那格的"这边那格"朝 dir 的那个面 —— 也就是玩家正踩着的那块。
         // 交给原版 BlockPlaceContext 去判支撑，相邻半空中没有依附会自己失败，不会凭空造方块。
@@ -165,48 +135,14 @@ public final class BridgeBuilder {
         try {
             // 原版放置：朝向、形状、支撑判定、扣物品、音效、统计全部沿用
             InteractionResult result = ((BlockItem) material.stack().getItem()).place(context);
-            return result != null && result.consumesAction();
+            if (result != null && result.consumesAction()) {
+                LAST_PLACE.put(player.getUUID(), System.currentTimeMillis());
+                return true;
+            }
+            return false;
         } catch (Exception e) {
             Log.error("自动搭路放置方块失败", e);
             return false;
         }
-    }
-
-    /** 一块砖：物品 + 在哪个手上。 */
-    private record Material(ItemStack stack, InteractionHand hand) {
-    }
-
-    /** 主手 → 副手 → 快捷栏，找第一个能当砖的方块。 */
-    private static Material findMaterial(ServerPlayer player) {
-        ItemStack main = player.getMainHandItem();
-        if (usable(player, main)) {
-            return new Material(main, InteractionHand.MAIN_HAND);
-        }
-        ItemStack off = player.getOffhandItem();
-        if (usable(player, off)) {
-            return new Material(off, InteractionHand.OFF_HAND);
-        }
-        var inventory = player.getInventory();
-        for (int slot = 0; slot < 9; slot++) {
-            ItemStack stack = inventory.getItem(slot);
-            if (usable(player, stack)) {
-                // 快捷栏里的方块：手不在它上面，但普通方块的 place 只用 getItemInHand()，
-                // 传 MAIN_HAND 即可正确扣掉这个 stack
-                return new Material(stack, InteractionHand.MAIN_HAND);
-            }
-        }
-        return null;
-    }
-
-    private static boolean usable(ServerPlayer player, ItemStack stack) {
-        if (stack.isEmpty() || !(stack.getItem() instanceof BlockItem blockItem)) {
-            return false;
-        }
-        if (!AutoBridgeConfig.requireFullBlock) {
-            return true;
-        }
-        // 种子、树苗、火把、台阶这些虽然能放，但拿来铺路既浪费又站不稳
-        BlockState state = blockItem.getBlock().defaultBlockState();
-        return state.isCollisionShapeFullBlock(player.level(), player.blockPosition());
     }
 }

@@ -1,6 +1,7 @@
 {
   "key.category.autobridge": "AutoBridge",
   "key.autobridge.toggle": "Toggle AutoBridge",
+  "key.autobridge.config": "Open AutoBridge Settings",
   "autobridge.hud.on": "AutoBridge ON",
   "autobridge.hud.off": "AutoBridge OFF"
 }

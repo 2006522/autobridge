@@ -21,6 +21,7 @@ import net.minecraft.resources.Identifier;
 public class AutoBridgeClient implements ClientModInitializer {
 
     public static KeyMapping toggleKey;
+    public static KeyMapping configKey;
 
     /** HUD 提示：切换开关时显示两秒。 */
     private static long hudUntil;
@@ -33,6 +34,8 @@ public class AutoBridgeClient implements ClientModInitializer {
         KeyMapping.Category category = KeyMapping.Category.register(Identifier.parse("autobridge"));
         toggleKey = KeyMappingHelper.registerKeyMapping(new KeyMapping(
                 "key.autobridge.toggle", InputConstants.Type.KEYBOARD, InputConstants.KEY_B, category));
+        configKey = KeyMappingHelper.registerKeyMapping(new KeyMapping(
+                "key.autobridge.config", InputConstants.Type.KEYBOARD, InputConstants.KEY_H, category));
 
         HudElementRegistry.addLast(Identifier.parse("autobridge:hud"), new AutoBridgeHud());
 
@@ -41,6 +44,11 @@ public class AutoBridgeClient implements ClientModInitializer {
                 AutoBridgeConfig.enable = !AutoBridgeConfig.enable;
                 AutoBridgeConfig.save();
                 show(AutoBridgeConfig.enable ? "自动搭路 已开启" : "自动搭路 已关闭");
+            }
+            while (configKey != null && configKey.consumeClick()) {
+                if (client.gui != null && client.gui.screen() == null) {
+                    client.setScreenAndShow(new ConfigScreen(null));
+                }
             }
         });
     }
